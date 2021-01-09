@@ -11,7 +11,10 @@ import com.typesafe.config.Config;
 import eu.allodslegacy.account.authenticator.Authenticator;
 import eu.allodslegacy.account.certificate.ServerCertificate;
 import eu.allodslegacy.account.db.dao.AccountDataSetDAO;
-import eu.allodslegacy.account.flows.*;
+import eu.allodslegacy.account.flows.AuthFlow;
+import eu.allodslegacy.account.flows.DDOSCheckerFlow;
+import eu.allodslegacy.account.flows.ShardListFlow;
+import eu.allodslegacy.account.flows.ValidationCheckerFlow;
 import eu.allodslegacy.io.crypto.CryptoUtils;
 import eu.allodslegacy.io.crypto.RSACipher;
 import eu.allodslegacy.io.net.Client;
@@ -19,6 +22,8 @@ import eu.allodslegacy.io.net.ClientQueue;
 import eu.allodslegacy.io.net.version.MsgVersionCheckFlow;
 import eu.allodslegacy.io.net.version.NetVersionCheckFlow;
 import eu.allodslegacy.io.net.version.Version;
+import eu.allodslegacy.io.serialization.CppInSerializable;
+import eu.allodslegacy.io.serialization.MsgFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,6 +59,7 @@ public class AuthListener {
         final RSACipher serverRSACipher = new RSACipher(SecureRandom.getInstance("SHA1PRNG"), serverPrivateKey, null, clientPublicKey);
         final Authenticator authenticator = Authenticator.create(config.getString("authenticator"), this.accountDataSetDAO);
         final ClientQueue<AccountServerClient> queue = new ClientQueue<>();
+        MsgFactory<CppInSerializable> msgFactory = MsgFactory.create("eu.allodslegacy.account.msg", CppInSerializable.class);
 
         RunnableGraph<CompletionStage<Tcp.ServerBinding>> serverLogic = Tcp.get(actorSystem).bind(host, port)
                 .map(connection -> {
@@ -70,9 +76,8 @@ public class AuthListener {
                 .<AccountServerClient>mapAsync(1, client -> client.attachFlow(DDOSCheckerFlow.create(6)))
                 .<AccountServerClient>mapAsync(1, client -> client.attachFlow(ValidationCheckerFlow.create(new byte[]{94, 45, 44, 53, 120, 0, 40, 55, 2, 7, 0, 4, 42, 9, 10, 1})))
                 .via(queue)
-                .<AccountServerClient>mapAsync(1, client -> client.attachFlow(KeyExchangeFlow.create(serverRSACipher, client.getRSACipher())))
-                .<AccountServerClient>mapAsync(1, client -> client.attachFlow(CertificateFlow.create(client.getRSACipher(), serverRSACipher, certificate)))
-                .<AccountServerClient>mapAsync(1, client -> client.attachFlow(AuthFlow.create(client.getRSACipher(), client.getIp(), authenticator)))
+                .<AccountServerClient>mapAsync(1, client -> client.attachFlow(AuthFlow.create(serverRSACipher, client.getRSACipher(), certificate, client.getIp(), authenticator)))
+                .<AccountServerClient>mapAsync(1, client -> client.attachFlow(ShardListFlow.create(msgFactory)))
                 .delay(Duration.ofSeconds(5), OverflowStrategy.dropHead())
                 .to(Sink.foreach(Client::closeConnection))
                 .withAttributes(ActorAttributes.withSupervisionStrategy(Supervision.getResumingDecider()));

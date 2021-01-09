@@ -32,7 +32,7 @@ public class MsgFactory<T extends CppInSerializable> {
         return new MsgFactory<>(idToClass);
     }
 
-    private T deserializeMsg(ByteString byteString) throws SerializationException {
+    public T deserializeMsg(ByteString byteString) throws SerializationException {
         ByteArrayInputStream buffer = new ByteArrayInputStream(byteString.toArray());
         SerializationDataInput in = new SerializationDataInput(buffer);
         try {

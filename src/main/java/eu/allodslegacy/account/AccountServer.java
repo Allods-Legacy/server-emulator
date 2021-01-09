@@ -18,14 +18,12 @@ public class AccountServer {
         final ActorSystem<Void> system = ActorSystem.create(Behaviors.empty(), "accountServer");
         log.info("Starting account server ...");
         Config config = ConfigFactory.load().getConfig("account-server");
-        //MsgFactory<CppInSerializable> msgFactory = MsgFactory.create("eu.allodslegacy.account.msg", CppInSerializable.class);
+
         DAOFactory factory = DAOFactory.create(config.getConfig("database"));
         AuthListener authListener = new AuthListener(config.getConfig("auth-listener"), factory.getAccountDataSetDAO());
         Http http = Http.get(system);
         AccountServerHttpAPI app = new AccountServerHttpAPI(factory.getAccountDataSetDAO());
-        authListener.start(system);/*.whenComplete((done, err) -> {
-            log.info("Auth listener listening on host: {} on port: {}", done.localAddress().getHostName(), done.localAddress().getPort());
-        });*/
+        authListener.start(system);
         http.newServerAt("localhost", 8080).bind(app.createRoute()).whenComplete((done, err) -> log.info("API listening on host: {} on port: {}", done.localAddress().getAddress(), done.localAddress().getPort()));
     }
 

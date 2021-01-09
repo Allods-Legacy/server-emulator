@@ -3,7 +3,9 @@ package eu.allodslegacy.io.crypto;
 import akka.NotUsed;
 import akka.stream.javadsl.Flow;
 
-import javax.crypto.Cipher;
+import javax.crypto.*;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
@@ -64,6 +66,32 @@ public class RSACipher {
             cipher.init(Cipher.ENCRYPT_MODE, this.cryptKey, this.secureRandom);
             return cipherFlow(cipher, ENCRYPT_SIZE);
         });
+    }
+
+    public byte[] decrypt(byte[] data) throws BadPaddingException, ShortBufferException, IllegalBlockSizeException, NoSuchPaddingException, NoSuchAlgorithmException, InvalidKeyException {
+        Cipher cipher = Cipher.getInstance(ALGORITHM);
+        cipher.init(Cipher.DECRYPT_MODE, decryptKey, secureRandom);
+        return this.doCipher(data, cipher, DECRYPT_SIZE);
+    }
+
+    public byte[] encrypt(byte[] data) throws BadPaddingException, ShortBufferException, IllegalBlockSizeException, NoSuchPaddingException, NoSuchAlgorithmException, InvalidKeyException {
+        Cipher cipher = Cipher.getInstance(ALGORITHM);
+        cipher.init(Cipher.ENCRYPT_MODE, cryptKey, this.secureRandom);
+        return doCipher(data, cipher, ENCRYPT_SIZE);
+    }
+
+    private byte[] doCipher(byte[] msg, Cipher cipher, int blockSize) throws BadPaddingException, ShortBufferException, IllegalBlockSizeException {
+        int blocksNum = msg.length / blockSize + (msg.length % blockSize == 0 ? 0 : 1);
+        byte[] buffer = new byte[blocksNum * BUFFER_BLOCK_SIZE];
+        int offset = 0;
+        int bytesToDecrypt = msg.length;
+        for (int i = 0; i < blocksNum; bytesToDecrypt -= blockSize) {
+            offset += cipher.doFinal(msg, i * blockSize, Math.min(bytesToDecrypt, blockSize), buffer, offset);
+            ++i;
+        }
+        byte[] result = new byte[offset];
+        System.arraycopy(buffer, 0, result, 0, offset);
+        return result;
     }
 
     public void setCryptKey(RSAPublicKey cryptKey) {

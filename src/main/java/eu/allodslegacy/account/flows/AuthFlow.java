@@ -1,69 +1,175 @@
 package eu.allodslegacy.account.flows;
 
 import akka.Done;
+import akka.stream.Attributes;
 import akka.stream.javadsl.Flow;
+import akka.stream.stage.AbstractInHandler;
+import akka.stream.stage.AbstractOutHandler;
+import akka.stream.stage.AsyncCallback;
+import akka.stream.stage.GraphStageLogic;
 import akka.util.ByteString;
 import eu.allodslegacy.account.LoginResult;
 import eu.allodslegacy.account.authenticator.AuthInfo;
+import eu.allodslegacy.account.authenticator.AuthenticationResult;
 import eu.allodslegacy.account.authenticator.Authenticator;
+import eu.allodslegacy.account.certificate.ServerCertificate;
 import eu.allodslegacy.account.db.dataset.Account;
-import eu.allodslegacy.account.msg.LoginMsg;
-import eu.allodslegacy.account.msg.LoginResultMsg;
-import eu.allodslegacy.account.msg.RSAEncryptedMsg;
+import eu.allodslegacy.account.msg.*;
+import eu.allodslegacy.io.crypto.CryptoUtils;
 import eu.allodslegacy.io.crypto.RSACipher;
+import eu.allodslegacy.io.net.NetGraphStage;
+import eu.allodslegacy.io.serialization.CppOutSerializable;
 import eu.allodslegacy.io.serialization.CppSerializer;
+import org.jetbrains.annotations.NotNull;
 
+import java.security.interfaces.RSAPublicKey;
 import java.util.concurrent.CompletionStage;
 
-public final class AuthFlow {
+public class AuthFlow extends NetGraphStage {
 
-    public static Flow<ByteString, ByteString, CompletionStage<Done>> create(RSACipher clientCipher, String ip, Authenticator authenticator) {
+    @NotNull
+    private final RSACipher serverCipher;
+    @NotNull
+    private final RSACipher clientCipher;
+    @NotNull
+    private final Authenticator authenticator;
+    @NotNull
+    private final ServerCertificate certificate;
+    @NotNull
+    private final String clientIp;
+
+    private AuthFlow(@NotNull RSACipher serverCipher, @NotNull RSACipher clientCipher, @NotNull ServerCertificate certificate, @NotNull String clientIp, @NotNull Authenticator authenticator) {
+        this.clientCipher = clientCipher;
+        this.serverCipher = serverCipher;
+        this.authenticator = authenticator;
+        this.certificate = certificate;
+        this.clientIp = clientIp;
+    }
+
+    public static Flow<ByteString, ByteString, CompletionStage<Done>> create(RSACipher serverCipher, RSACipher clientCipher, ServerCertificate serverCertificate, String clientIp, Authenticator authenticator) {
         return Flow.of(ByteString.class)
-                .take(1)
-                .map(b -> CppSerializer.deserialize(b, RSAEncryptedMsg.class).getData())
-                .via(clientCipher.decrypt())
-                .map(data -> CppSerializer.deserialize(data, LoginMsg.class))
-                .map(loginMsg -> new AuthInfo(loginMsg.getUserName(), loginMsg.getPassword(), ip))
-                .mapAsync(1, authenticator::authenticate)
-                .map(authResult -> {
-                    LoginResultMsg msg = new LoginResultMsg(LoginResult.SERVER_ERROR, "");
-                    switch (authResult.getResultCode()) {
-                        case SUCCESS -> {
-                            Account account = authResult.getAccountDataSet();
-                            if (account == null) {
-                                throw new Exception("Account null");
-                            }
-                            msg.setResult(LoginResult.LOGIN_SUCCESS);
-                            msg.setLogin(account.getLogin());
-                            msg.setLastIp(account.getLastIp());
-                            msg.setLastAvatarName(account.getLastAvatarName());
-                            msg.setLastIp(account.getLastIp());
-                            msg.setLastShardEnter(account.getLastShardEnter());
-                            msg.setLastShardQuit(account.getLastShardQuit());
-                            msg.setLastShardName(account.getLastShardName());
-                            msg.setReloginId("a789dlm");
-                            msg.setSessionId("a7y9edm");
-                            msg.setFlags(account.getFlags());
-                        }
-                        case WRONG_AUTH_INFO -> msg.setResult(LoginResult.WRONG_AUTH_INFO);
-                        case ACCOUNT_INACTIVE -> msg.setResult(LoginResult.ACCOUNT_INACTIVE);
-                        case ACCOUNT_INACTIVE_TEMPORARY -> msg.setResult(LoginResult.ACCOUNT_INACTIVE_TEMPORARY);
-                    }
-                    return msg;
-                })
-                .map(CppSerializer::serialize)
-                .via(clientCipher.encrypt())
-                .map(encryptedData -> new RSAEncryptedMsg(RSAEncryptedMsg.EncryptionMethod.RANDOM_KEY, encryptedData))
-                .map(CppSerializer::serializeWithId)
-                .map(ByteString::fromArray)
+                .via(new AuthFlow(serverCipher, clientCipher, serverCertificate, clientIp, authenticator))
                 .watchTermination((notUsed, done) -> done);
     }
 
+    @Override
+    public GraphStageLogic createLogic(Attributes inheritedAttributes) throws Exception {
+        return new GraphStageLogic(shape) {
 
-    public enum DialogState {
-        PUBLIC_KEY,
-        ENCRYPTED_CERTIFICATE,
-        ENCRYPTED_LOGIN_PASSWORD
+            private DialogState state;
+            private AsyncCallback<AuthenticationResult> authCallback;
+
+            {
+                setHandler(in, new AbstractInHandler() {
+
+                    @Override
+                    public void onPush() throws Exception {
+                        RSAEncryptedMsg msg = CppSerializer.deserialize(grab(in), RSAEncryptedMsg.class);
+                        if (state == DialogState.LOGIN_IN_PROGRESS) {
+                            return;
+                        }
+                        byte[] decryptedData;
+                        byte[] encryptedData;
+                        CppOutSerializable response = null;
+                        switch (msg.getEncryptionMethod()) {
+
+                            case NOT_ENCRYPTED:
+                                break;
+
+                            case SECRET_KEY:
+                                decryptedData = serverCipher.decrypt(msg.getData());
+                                if (state == DialogState.PUBLIC_KEY) {
+                                    RSAPublicKeyMsg clientPublicKeyMsg = CppSerializer.deserialize(decryptedData, RSAPublicKeyMsg.class);
+                                    RSAPublicKey clientPublicKey = CryptoUtils.constructPublicKey(clientPublicKeyMsg.getModulus(), clientPublicKeyMsg.getExponent());
+                                    clientCipher.setCryptKey(clientPublicKey);
+                                    RSAPublicKeyMsg serverPublicKeyMsg = new RSAPublicKeyMsg(
+                                            clientCipher.getPublicKey().getModulus().toByteArray(),
+                                            clientCipher.getPublicKey().getPublicExponent().toByteArray()
+                                    );
+                                    encryptedData = serverCipher.encrypt(clientCipher.encrypt(CppSerializer.serialize(serverPublicKeyMsg)));
+                                    response = new RSAEncryptedMsg(RSAEncryptedMsg.EncryptionMethod.RANDOM_AND_SECRET_KEY, encryptedData);
+                                    state = DialogState.ENCRYPTED_CERTIFICATE;
+                                }
+                                break;
+
+                            case RANDOM_KEY:
+                                decryptedData = clientCipher.decrypt(msg.getData());
+                                if (state == DialogState.ENCRYPTED_LOGIN_PASSWORD) {
+                                    LoginMsg loginMsg = CppSerializer.deserialize(decryptedData, LoginMsg.class);
+                                    AuthInfo authInfo = new AuthInfo(loginMsg.getUserName(), loginMsg.getPassword(), clientIp);
+                                    authenticator.authenticate(authInfo).thenAccept(authCallback::invoke);
+                                    state = DialogState.LOGIN_IN_PROGRESS;
+                                } else if (state == DialogState.ENCRYPTED_CERTIFICATE) {
+                                    CertificateRequestMsg certificateRequestMsg = CppSerializer.deserialize(decryptedData, CertificateRequestMsg.class);
+                                    byte[] responseCertificate = certificate.sign(certificateRequestMsg.getSeed());
+                                    encryptedData = clientCipher.encrypt(CppSerializer.serialize(new CertificateResponse(responseCertificate)));
+                                    response = new RSAEncryptedMsg(RSAEncryptedMsg.EncryptionMethod.RANDOM_KEY, encryptedData);
+                                    state = DialogState.ENCRYPTED_LOGIN_PASSWORD;
+                                }
+                                break;
+                        }
+                        if (response != null) {
+                            push(out, ByteString.fromArray(CppSerializer.serializeWithId(response)));
+                            return;
+                        }
+                        if (state != DialogState.LOGIN_IN_PROGRESS) {
+                            encryptedData = clientCipher.encrypt(CppSerializer.serialize(new LoginResultMsg(LoginResult.SERVER_ERROR, "")));
+                            response = new RSAEncryptedMsg(RSAEncryptedMsg.EncryptionMethod.RANDOM_KEY, encryptedData);
+                            push(out, ByteString.fromArray(CppSerializer.serializeWithId(response)));
+                            completeStage();
+                        }
+                    }
+                });
+
+                setHandler(out, new AbstractOutHandler() {
+                    @Override
+                    public void onPull() throws Exception {
+                        pull(in);
+                    }
+                });
+            }
+
+            @Override
+            public void preStart() throws Exception {
+                state = DialogState.PUBLIC_KEY;
+                authCallback = createAsyncCallback(authenticationResult -> {
+                    LoginResultMsg loginResultMsg = new LoginResultMsg(LoginResult.SERVER_ERROR, "");
+                    switch (authenticationResult.getResultCode()) {
+                        case SUCCESS -> {
+                            Account account = authenticationResult.getAccountDataSet();
+                            if (account == null) {
+                                break;
+                            }
+                            loginResultMsg.setResult(LoginResult.LOGIN_SUCCESS);
+                            loginResultMsg.setLogin(account.getLogin());
+                            loginResultMsg.setLastIp(account.getLastIp());
+                            loginResultMsg.setLastAvatarName(account.getLastAvatarName());
+                            loginResultMsg.setLastIp(account.getLastIp());
+                            loginResultMsg.setLastShardEnter(account.getLastShardEnter());
+                            loginResultMsg.setLastShardQuit(account.getLastShardQuit());
+                            loginResultMsg.setLastShardName(account.getLastShardName());
+                            loginResultMsg.setReloginId("a789dlm");
+                            loginResultMsg.setSessionId("a7y9edm");
+                            loginResultMsg.setFlags(account.getFlags());
+                        }
+                        case WRONG_AUTH_INFO -> loginResultMsg.setResult(LoginResult.WRONG_AUTH_INFO);
+                        case BANNED -> loginResultMsg.setResult(LoginResult.BANNED);
+                        case ACCOUNT_INACTIVE -> loginResultMsg.setResult(LoginResult.ACCOUNT_INACTIVE);
+                        case ACCOUNT_INACTIVE_TEMPORARY -> loginResultMsg.setResult(LoginResult.ACCOUNT_INACTIVE_TEMPORARY);
+                    }
+                    byte[] encryptedData = clientCipher.encrypt(CppSerializer.serialize(loginResultMsg));
+                    RSAEncryptedMsg result = new RSAEncryptedMsg(RSAEncryptedMsg.EncryptionMethod.RANDOM_KEY, encryptedData);
+                    emit(out, ByteString.fromArray(CppSerializer.serializeWithId(result)));
+                    completeStage();
+                });
+            }
+        };
     }
 
+    enum DialogState {
+        PUBLIC_KEY,
+        ENCRYPTED_CERTIFICATE,
+        ENCRYPTED_LOGIN_PASSWORD,
+        LOGIN_IN_PROGRESS
+    }
 }
