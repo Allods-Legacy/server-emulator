@@ -1,9 +1,6 @@
 package eu.allodslegacy.account.msg;
 
-import eu.allodslegacy.account.LoginResult;
-import eu.allodslegacy.io.serialization.CppOutSerializable;
-import eu.allodslegacy.io.serialization.SerializationDataOutput;
-import eu.allodslegacy.io.serialization.SerializationId;
+import eu.allodslegacy.io.serialization.*;
 import org.jetbrains.annotations.NotNull;
 
 @SerializationId(4)
@@ -90,5 +87,31 @@ public class LoginResultMsg implements CppOutSerializable {
         out.writeUTF(this.reloginId);
         out.writeByte(this.result.ordinal());
         out.writeUTF(this.sessionId);
+    }
+
+    public enum LoginResult {
+
+        LOGIN_SUCCESS,
+        OTHER_CLIENT_IN_GAME,
+        WRONG_VERSION,
+        SERVER_ERROR,
+        UNEXPECTED_DATA,
+        WRONG_AUTH_INFO,
+        BANNED,
+        TIMEOUT,
+        SERVER_IS_OVERLOADED,
+        ACCOUNT_INACTIVE,
+        ACCOUNT_INACTIVE_TEMPORARY,
+        WRONG_CERTIFICATE,
+        CLIENT_VALIDATION_FAILED;
+
+        public static LoginResult readCpp(SerializationDataInput inputStream) throws Exception {
+            int value = inputStream.readByte();
+            if (value > 0 && value < LoginResult.values().length) {
+                return LoginResult.values()[value];
+            } else {
+                throw new SerializationException();
+            }
+        }
     }
 }

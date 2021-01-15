@@ -1,24 +1,39 @@
 package eu.allodslegacy.account.db.dataset;
 
+import org.bson.codecs.pojo.annotations.BsonCreator;
 import org.bson.codecs.pojo.annotations.BsonIgnore;
+import org.bson.codecs.pojo.annotations.BsonProperty;
+import org.jetbrains.annotations.NotNull;
 
 import java.time.Instant;
 import java.util.Date;
 
 public class Sanction {
 
-    private SanctionType sanctionType;
+    @NotNull
+    private SanctionType type;
     private long setTime;
     private long expireTime;
+    @NotNull
     private String reason;
+    @NotNull
     private String gmName;
 
-    public SanctionType getSanctionType() {
-        return sanctionType;
+    @BsonCreator
+    public Sanction(@BsonProperty("type") @NotNull SanctionType type, @BsonProperty("setTime") long setTime, @BsonProperty("expireTime") long expireTime, @BsonProperty("reason") @NotNull String reason, @BsonProperty("gmName") @NotNull String gmName) {
+        this.type = type;
+        this.setTime = setTime;
+        this.expireTime = expireTime;
+        this.reason = reason;
+        this.gmName = gmName;
     }
 
-    public void setSanctionType(SanctionType sanctionType) {
-        this.sanctionType = sanctionType;
+    public @NotNull SanctionType getType() {
+        return type;
+    }
+
+    public void setType(@NotNull SanctionType type) {
+        this.type = type;
     }
 
     public long getSetTime() {
@@ -37,19 +52,19 @@ public class Sanction {
         this.expireTime = expireTime;
     }
 
-    public String getReason() {
+    public @NotNull String getReason() {
         return reason;
     }
 
-    public void setReason(String reason) {
+    public void setReason(@NotNull String reason) {
         this.reason = reason;
     }
 
-    public String getGmName() {
+    public @NotNull String getGmName() {
         return gmName;
     }
 
-    public void setGmName(String gmName) {
+    public void setGmName(@NotNull String gmName) {
         this.gmName = gmName;
     }
 
@@ -62,5 +77,4 @@ public class Sanction {
         BAN,
         MUTE
     }
-
 }

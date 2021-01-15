@@ -8,7 +8,7 @@ import akka.stream.stage.AbstractOutHandler;
 import akka.stream.stage.AsyncCallback;
 import akka.stream.stage.GraphStageLogic;
 import akka.util.ByteString;
-import eu.allodslegacy.account.LoginResult;
+import eu.allodslegacy.account.AccountServerClient;
 import eu.allodslegacy.account.authenticator.AuthInfo;
 import eu.allodslegacy.account.authenticator.AuthenticationResult;
 import eu.allodslegacy.account.authenticator.Authenticator;
@@ -27,6 +27,7 @@ import java.util.concurrent.CompletionStage;
 
 public class AuthFlow extends NetGraphStage {
 
+    private final AccountServerClient client;
     @NotNull
     private final RSACipher serverCipher;
     @NotNull
@@ -38,22 +39,23 @@ public class AuthFlow extends NetGraphStage {
     @NotNull
     private final String clientIp;
 
-    private AuthFlow(@NotNull RSACipher serverCipher, @NotNull RSACipher clientCipher, @NotNull ServerCertificate certificate, @NotNull String clientIp, @NotNull Authenticator authenticator) {
+    private AuthFlow(AccountServerClient client, @NotNull RSACipher serverCipher, @NotNull RSACipher clientCipher, @NotNull ServerCertificate certificate, @NotNull String clientIp, @NotNull Authenticator authenticator) {
         this.clientCipher = clientCipher;
         this.serverCipher = serverCipher;
         this.authenticator = authenticator;
         this.certificate = certificate;
         this.clientIp = clientIp;
+        this.client = client;
     }
 
-    public static Flow<ByteString, ByteString, CompletionStage<Done>> create(RSACipher serverCipher, RSACipher clientCipher, ServerCertificate serverCertificate, String clientIp, Authenticator authenticator) {
+    public static Flow<ByteString, ByteString, CompletionStage<Done>> create(AccountServerClient accountServerClient, RSACipher serverCipher, RSACipher clientCipher, ServerCertificate serverCertificate, String clientIp, Authenticator authenticator) {
         return Flow.of(ByteString.class)
-                .via(new AuthFlow(serverCipher, clientCipher, serverCertificate, clientIp, authenticator))
+                .via(new AuthFlow(accountServerClient, serverCipher, clientCipher, serverCertificate, clientIp, authenticator))
                 .watchTermination((notUsed, done) -> done);
     }
 
     @Override
-    public GraphStageLogic createLogic(Attributes inheritedAttributes) throws Exception {
+    public GraphStageLogic createLogic(Attributes inheritedAttributes) {
         return new GraphStageLogic(shape) {
 
             private DialogState state;
@@ -113,7 +115,7 @@ public class AuthFlow extends NetGraphStage {
                             return;
                         }
                         if (state != DialogState.LOGIN_IN_PROGRESS) {
-                            encryptedData = clientCipher.encrypt(CppSerializer.serialize(new LoginResultMsg(LoginResult.SERVER_ERROR, "")));
+                            encryptedData = clientCipher.encrypt(CppSerializer.serialize(new LoginResultMsg(LoginResultMsg.LoginResult.SERVER_ERROR, "")));
                             response = new RSAEncryptedMsg(RSAEncryptedMsg.EncryptionMethod.RANDOM_KEY, encryptedData);
                             push(out, ByteString.fromArray(CppSerializer.serializeWithId(response)));
                             completeStage();
@@ -123,24 +125,25 @@ public class AuthFlow extends NetGraphStage {
 
                 setHandler(out, new AbstractOutHandler() {
                     @Override
-                    public void onPull() throws Exception {
+                    public void onPull() {
                         pull(in);
                     }
                 });
             }
 
             @Override
-            public void preStart() throws Exception {
+            public void preStart() {
                 state = DialogState.PUBLIC_KEY;
                 authCallback = createAsyncCallback(authenticationResult -> {
-                    LoginResultMsg loginResultMsg = new LoginResultMsg(LoginResult.SERVER_ERROR, "");
+                    LoginResultMsg loginResultMsg = new LoginResultMsg(LoginResultMsg.LoginResult.SERVER_ERROR, "");
                     switch (authenticationResult.getResultCode()) {
                         case SUCCESS -> {
                             Account account = authenticationResult.getAccountDataSet();
                             if (account == null) {
                                 break;
                             }
-                            loginResultMsg.setResult(LoginResult.LOGIN_SUCCESS);
+                            client.setAccount(account);
+                            loginResultMsg.setResult(LoginResultMsg.LoginResult.LOGIN_SUCCESS);
                             loginResultMsg.setLogin(account.getLogin());
                             loginResultMsg.setLastIp(account.getLastIp());
                             loginResultMsg.setLastAvatarName(account.getLastAvatarName());
@@ -152,10 +155,10 @@ public class AuthFlow extends NetGraphStage {
                             loginResultMsg.setSessionId("a7y9edm");
                             loginResultMsg.setFlags(account.getFlags());
                         }
-                        case WRONG_AUTH_INFO -> loginResultMsg.setResult(LoginResult.WRONG_AUTH_INFO);
-                        case BANNED -> loginResultMsg.setResult(LoginResult.BANNED);
-                        case ACCOUNT_INACTIVE -> loginResultMsg.setResult(LoginResult.ACCOUNT_INACTIVE);
-                        case ACCOUNT_INACTIVE_TEMPORARY -> loginResultMsg.setResult(LoginResult.ACCOUNT_INACTIVE_TEMPORARY);
+                        case WRONG_AUTH_INFO -> loginResultMsg.setResult(LoginResultMsg.LoginResult.WRONG_AUTH_INFO);
+                        case BANNED -> loginResultMsg.setResult(LoginResultMsg.LoginResult.BANNED);
+                        case ACCOUNT_INACTIVE -> loginResultMsg.setResult(LoginResultMsg.LoginResult.ACCOUNT_INACTIVE);
+                        case ACCOUNT_INACTIVE_TEMPORARY -> loginResultMsg.setResult(LoginResultMsg.LoginResult.ACCOUNT_INACTIVE_TEMPORARY);
                     }
                     byte[] encryptedData = clientCipher.encrypt(CppSerializer.serialize(loginResultMsg));
                     RSAEncryptedMsg result = new RSAEncryptedMsg(RSAEncryptedMsg.EncryptionMethod.RANDOM_KEY, encryptedData);

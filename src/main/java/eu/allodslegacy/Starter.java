@@ -9,6 +9,7 @@ import akka.cluster.typed.Cluster;
 import akka.cluster.typed.ClusterSingleton;
 import akka.cluster.typed.SingletonActor;
 import eu.allodslegacy.account.AccountServer;
+import eu.allodslegacy.account.AccountServerProtocol;
 import eu.allodslegacy.shard.Shard;
 
 public class Starter {
@@ -23,7 +24,7 @@ public class Starter {
             return Behaviors.setup(context -> {
                 Cluster cluster = Cluster.get(context.getSystem());
                 ClusterSingleton singleton = ClusterSingleton.get(context.getSystem());
-                ActorRef<AccountServer.Cmd> accountServer = singleton.init(
+                ActorRef<AccountServerProtocol.Command> accountServer = singleton.init(
                         SingletonActor.of(
                                 Behaviors.supervise(AccountServer.create())
                                         .onFailure(

@@ -1,5 +1,6 @@
 package eu.allodslegacy.account;
 
+import akka.actor.typed.ActorRef;
 import akka.actor.typed.ActorSystem;
 import akka.stream.ActorAttributes;
 import akka.stream.OverflowStrategy;
@@ -42,10 +43,12 @@ public class AuthListener {
     private final Config config;
 
     private final AccountDataSetDAO accountDataSetDAO;
+    private final ActorRef<AccountServerProtocol.Command> accountServer;
 
-    public AuthListener(Config config, AccountDataSetDAO accountDataSetDAO) {
+    public AuthListener(Config config, AccountDataSetDAO accountDataSetDAO, ActorRef<AccountServerProtocol.Command> accountServer) {
         this.config = config;
         this.accountDataSetDAO = accountDataSetDAO;
+        this.accountServer = accountServer;
     }
 
     public void start(ActorSystem<Void> actorSystem) throws Exception {
@@ -76,8 +79,9 @@ public class AuthListener {
                 .<AccountServerClient>mapAsync(1, client -> client.attachFlow(DDOSCheckerFlow.create(6)))
                 .<AccountServerClient>mapAsync(1, client -> client.attachFlow(ValidationCheckerFlow.create(new byte[]{94, 45, 44, 53, 120, 0, 40, 55, 2, 7, 0, 4, 42, 9, 10, 1})))
                 .via(queue)
-                .<AccountServerClient>mapAsync(1, client -> client.attachFlow(AuthFlow.create(serverRSACipher, client.getRSACipher(), certificate, client.getIp(), authenticator)))
-                .<AccountServerClient>mapAsync(1, client -> client.attachFlow(ShardListFlow.create(msgFactory)))
+                .<AccountServerClient>mapAsync(1, client -> client.attachFlow(AuthFlow.create(client, serverRSACipher, client.getRSACipher(), certificate, client.getIp(), authenticator)))
+                .<AccountServerClient>mapAsync(1, client -> client.attachFlow(ShardListFlow.create(actorSystem, client, msgFactory, accountServer)))
+                .map(client -> client)
                 .delay(Duration.ofSeconds(5), OverflowStrategy.dropHead())
                 .to(Sink.foreach(Client::closeConnection))
                 .withAttributes(ActorAttributes.withSupervisionStrategy(Supervision.getResumingDecider()));

@@ -7,24 +7,27 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import com.typesafe.config.Config;
-import eu.allodslegacy.account.AccountServer;
+import eu.allodslegacy.RealmMode;
+import eu.allodslegacy.account.AccountServerProtocol;
+
+import java.util.LinkedList;
 
 public class Shard extends AbstractBehavior<Shard.Cmd> {
 
-    private final ActorRef<AccountServer.Cmd> accountServer;
+    private final ActorRef<AccountServerProtocol.Command> accountServer;
 
-    private Shard(ActorContext<Cmd> context, ActorRef<AccountServer.Cmd> accountServer) {
+    private Shard(ActorContext<Cmd> context, ActorRef<AccountServerProtocol.Command> accountServer) {
         super(context);
         this.accountServer = accountServer;
-        Config config = context.getSystem().settings().config().getConfig("shard");
-        String host = config.getString("frontend.host");
-        int port = config.getInt("frontend.port");
-        accountServer.tell(new AccountServer.RegisterShard("shard", "test shard", true, 1000));
     }
 
-    public static Behavior<Cmd> create(ActorRef<AccountServer.Cmd> accountServer) {
+    public static Behavior<Cmd> create(ActorRef<AccountServerProtocol.Command> accountServer) {
         return Behaviors.setup(context -> {
             context.getLog().info("Starting shard ...");
+            Config config = context.getSystem().settings().config().getConfig("shard");
+            String host = config.getString("frontend.host");
+            int port = config.getInt("frontend.port");
+            accountServer.tell(new AccountServerProtocol.RegisterShard("shard", host, port, "test shard", RealmMode.PVP, 1000, new LinkedList<>()));
             return new Shard(context, accountServer);
         });
     }
